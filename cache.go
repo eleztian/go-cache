@@ -12,15 +12,30 @@ import (
 
 type Item struct {
 	Object     interface{}
-	Expiration int64
+	CreateTime time.Time
+	Dur        time.Duration
 }
 
-// Returns true if the item has expired.
+// Expired Returns true if the item has expired.
 func (item Item) Expired() bool {
-	if item.Expiration == 0 {
-		return false
+	if item.Dur > 0 {
+		sub := time.Now().Sub(item.CreateTime)
+
+		return sub < 0 || sub > item.Dur
 	}
-	return time.Now().UnixNano() > item.Expiration
+
+	return false
+}
+
+// ExpiredWithTime Returns true if the item has expired.
+func (item Item) ExpiredWithTime(now time.Time) bool {
+	if item.Dur > 0 {
+		sub := now.Sub(item.CreateTime)
+
+		return sub < 0 || sub > item.Dur
+	}
+
+	return false
 }
 
 const (
@@ -45,22 +60,20 @@ type cache struct {
 	janitor           *janitor
 }
 
-// Add an item to the cache, replacing any existing item. If the duration is 0
+// Set Add an item to the cache, replacing any existing item. If the duration is 0
 // (DefaultExpiration), the cache's default expiration time is used. If it is -1
 // (NoExpiration), the item never expires.
 func (c *cache) Set(k string, x interface{}, d time.Duration) {
-	// "Inlining" of set
-	var e int64
 	if d == DefaultExpiration {
 		d = c.defaultExpiration
 	}
-	if d > 0 {
-		e = time.Now().Add(d).UnixNano()
-	}
+	createTime := time.Now()
+
 	c.mu.Lock()
 	c.items[k] = Item{
 		Object:     x,
-		Expiration: e,
+		CreateTime: createTime,
+		Dur:        d,
 	}
 	// TODO: Calls to mu.Unlock are currently not deferred because defer
 	// adds ~200 ns (as of go1.)
@@ -68,16 +81,14 @@ func (c *cache) Set(k string, x interface{}, d time.Duration) {
 }
 
 func (c *cache) set(k string, x interface{}, d time.Duration) {
-	var e int64
 	if d == DefaultExpiration {
 		d = c.defaultExpiration
 	}
-	if d > 0 {
-		e = time.Now().Add(d).UnixNano()
-	}
+
 	c.items[k] = Item{
 		Object:     x,
-		Expiration: e,
+		CreateTime: time.Now(),
+		Dur:        d,
 	}
 }
 
@@ -125,11 +136,9 @@ func (c *cache) Get(k string) (interface{}, bool) {
 		c.mu.RUnlock()
 		return nil, false
 	}
-	if item.Expiration > 0 {
-		if time.Now().UnixNano() > item.Expiration {
-			c.mu.RUnlock()
-			return nil, false
-		}
+	if item.Expired() {
+		c.mu.RUnlock()
+		return nil, false
 	}
 	c.mu.RUnlock()
 	return item.Object, true
@@ -148,15 +157,14 @@ func (c *cache) GetWithExpiration(k string) (interface{}, time.Time, bool) {
 		return nil, time.Time{}, false
 	}
 
-	if item.Expiration > 0 {
-		if time.Now().UnixNano() > item.Expiration {
+	if item.Dur > 0 {
+		if item.Expired() {
 			c.mu.RUnlock()
 			return nil, time.Time{}, false
 		}
-
 		// Return the item and the expiration time
 		c.mu.RUnlock()
-		return item.Object, time.Unix(0, item.Expiration), true
+		return item.Object, item.CreateTime.Add(item.Dur), true
 	}
 
 	// If expiration <= 0 (i.e. no expiration time set) then return the item
@@ -171,10 +179,8 @@ func (c *cache) get(k string) (interface{}, bool) {
 		return nil, false
 	}
 	// "Inlining" of Expired
-	if item.Expiration > 0 {
-		if time.Now().UnixNano() > item.Expiration {
-			return nil, false
-		}
+	if item.Expired() {
+		return nil, false
 	}
 	return item.Object, true
 }
@@ -930,11 +936,11 @@ type keyAndValue struct {
 // Delete all expired items from the cache.
 func (c *cache) DeleteExpired() {
 	var evictedItems []keyAndValue
-	now := time.Now().UnixNano()
+	now := time.Now()
 	c.mu.Lock()
 	for k, v := range c.items {
 		// "Inlining" of expired
-		if v.Expiration > 0 && now > v.Expiration {
+		if v.ExpiredWithTime(now) {
 			ov, evicted := c.delete(k)
 			if evicted {
 				evictedItems = append(evictedItems, keyAndValue{k, ov})
@@ -1039,13 +1045,11 @@ func (c *cache) Items() map[string]Item {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	m := make(map[string]Item, len(c.items))
-	now := time.Now().UnixNano()
+	now := time.Now()
 	for k, v := range c.items {
 		// "Inlining" of Expired
-		if v.Expiration > 0 {
-			if now > v.Expiration {
-				continue
-			}
+		if v.ExpiredWithTime(now) {
+			continue
 		}
 		m[k] = v
 	}

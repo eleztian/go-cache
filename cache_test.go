@@ -110,11 +110,13 @@ func TestNewFrom(t *testing.T) {
 	m := map[string]Item{
 		"a": Item{
 			Object:     1,
-			Expiration: 0,
+			CreateTime: time.Now(),
+			Dur:        0,
 		},
 		"b": Item{
 			Object:     2,
-			Expiration: 0,
+			CreateTime: time.Now(),
+			Dur:        0,
 		},
 	}
 	tc := NewFrom(DefaultExpiration, 0, m)
@@ -1762,7 +1764,7 @@ func TestGetWithExpiration(t *testing.T) {
 	} else if e2 := x.(int); e2+2 != 3 {
 		t.Error("e (which should be 1) plus 2 does not equal 3; value:", e2)
 	}
-	if expiration.UnixNano() != tc.items["e"].Expiration {
+	if expiration.UnixNano() != tc.items["e"].CreateTime.Add(tc.items["e"].Dur).UnixNano() {
 		t.Error("expiration for e is not the correct time")
 	}
 	if expiration.UnixNano() < time.Now().UnixNano() {
